@@ -61,11 +61,10 @@ class Suite2P(BaseLoader):
             The path of the session
         """
         path = Path(path)
-        self.basename = path.name
 
         super().__init__(path)
 
-        self.load_suite2p_nwb(path)
+        self.load_suite2p_nwb()
 
     def _get_ophys_processing(self, nwbfile):
         if "ophys" in nwbfile.processing.keys():
@@ -178,7 +177,7 @@ class Suite2P(BaseLoader):
 
         return True
 
-    def load_suite2p_nwb(self, path=None):
+    def load_suite2p_nwb(self):
         """
         Load suite2p data from NWB
 
@@ -190,7 +189,6 @@ class Suite2P(BaseLoader):
         pynwb = importlib.import_module("pynwb")
         io = pynwb.NWBHDF5IO(self.nwbfilepath, "r")
         nwbfile = io.read()
-
         try:
             ophys = self._get_ophys_processing(nwbfile)
             if ophys is None:
