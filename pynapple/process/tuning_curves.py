@@ -13,6 +13,116 @@ import pandas as pd
 from .. import core as nap
 
 
+def _validate_boolean_flag(value, name):
+    if value != 1 and value != 0 and not isinstance(value, bool):
+        raise TypeError(f"{name} should be a boolean.")
+
+
+def _normalize_feature_names(features, feature_names):
+    if feature_names is None:
+        return features.columns if isinstance(features, nap.TsdFrame) else ["0"]
+
+    if (
+        not hasattr(feature_names, "__len__")
+        or isinstance(feature_names, str)
+        or not all(isinstance(n, str) for n in feature_names)
+    ):
+        raise TypeError("feature_names should be a list of strings.")
+
+    expected = 1 if isinstance(features, nap.Tsd) else features.shape[-1]
+    if len(feature_names) != expected:
+        raise ValueError("feature_names should match the number of features.")
+
+    return feature_names
+
+
+def _normalize_epochs(data, features, epochs):
+    if epochs is None:
+        epochs = features.time_support
+    elif isinstance(epochs, nap.IntervalSet):
+        features = features.restrict(epochs)
+    else:
+        raise TypeError("epochs should be an IntervalSet.")
+
+    return data.restrict(epochs), features, epochs
+
+
+def _normalize_fs(features, epochs, fs):
+    if fs is None:
+        fs = 1 / np.mean(features.time_diff(epochs=epochs).values)
+    if not isinstance(fs, (int, float)):
+        raise TypeError("fs should be a number (int or float)")
+    return fs
+
+
+def _normalize_range(features, range_):
+    if range_ is not None and isinstance(range_, tuple):
+        if features.ndim == 1 or features.shape[1] == 1:
+            return [range_]
+        raise ValueError(
+            "range should be a sequence of tuples, one for each feature."
+        )
+    return range_
+
+
+def _compute_spike_tuning_curves(data, keys, features, bin_edges, occupancy, fs, return_counts):
+    if isinstance(data, nap.Ts):
+        data = nap.TsGroup({0: data})
+
+    tcs = np.zeros([len(keys), *occupancy.shape])
+    for i, n in enumerate(keys):
+        if not isinstance(data[n], nap.Ts):
+            warnings.warn(f"TsGroup entry {n} was not a Ts, but treating it as one!")
+        tcs[i] = np.histogramdd(
+            data[n].value_from(features),
+            bins=bin_edges,
+        )[0]
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        if not return_counts:
+            tcs = (tcs / occupancy) * fs
+
+    return tcs, data
+
+
+def _compute_rate_tuning_curves(data, keys, features, bin_edges, occupancy):
+    values = data.value_from(features)
+    if isinstance(data, nap.Tsd):
+        data = np.expand_dims(data.values, -1)
+
+    counts = np.histogramdd(values, bins=bin_edges)[0]
+    counts[counts == 0] = np.nan
+
+    tcs = np.zeros([len(keys), *occupancy.shape])
+    for i, _ in enumerate(keys):
+        tcs[i] = np.histogramdd(
+            values,
+            weights=data[:, i],
+            bins=bin_edges,
+        )[0]
+
+    tcs /= counts
+    tcs[np.isnan(tcs)] = 0.0
+    tcs[:, occupancy == 0.0] = np.nan
+    return tcs
+
+
+def _build_tuning_curves_dataarray(tcs, keys, feature_names, bin_edges, attrs):
+    import xarray as xr
+
+    return xr.DataArray(
+        tcs,
+        coords={
+            "unit": keys,
+            **{
+                str(feature_name): e[:-1] + np.diff(e) / 2
+                for feature_name, e in zip(feature_names, bin_edges)
+            },
+        },
+        attrs=attrs,
+    )
+
+
 def compute_tuning_curves(
     data,
     features,
@@ -183,182 +293,45 @@ def compute_tuning_curves(
             bin_edges:  [array([0.  , 0.09, 0.18, 0.27, 0.36, 0.45, 0.54, 0.63, 0.72,...
             fs:         10.0
     """
-    data, features, feature_names, fs, range = _validate_tuning_curves_inputs(
-        data=data,
-        features=features,
-        feature_names=feature_names,
-        epochs=epochs,
-        fs=fs,
-        range=range,
-        return_pandas=return_pandas,
-        return_counts=return_counts,
-    )
-    occupancy, bin_edges = np.histogramdd(features, bins=bins, range=range)
-    keys = _get_tuning_curve_keys(data)
-    tcs = _compute_tuning_curve_values(
-        data=data,
-        features=features,
-        occupancy=occupancy,
-        bin_edges=bin_edges,
-        keys=keys,
-        fs=fs,
-        return_counts=return_counts,
-    )
-    tcs = _build_tuning_curve_dataarray(
-        tcs=tcs,
-        occupancy=occupancy,
-        bin_edges=bin_edges,
-        keys=keys,
-        feature_names=feature_names,
-        fs=fs,
-        data=data,
-    )
-    return tcs.to_pandas().T if return_pandas else tcs
-
-
-def _validate_tuning_curves_inputs(
-    data,
-    features,
-    feature_names,
-    epochs,
-    fs,
-    range,
-    return_pandas,
-    return_counts,
-):
     if not isinstance(data, (nap.TsdFrame, nap.TsGroup, nap.Ts, nap.Tsd)):
         raise TypeError("data should be a TsdFrame, TsGroup, Ts, or Tsd.")
 
     if not isinstance(features, (nap.TsdFrame, nap.Tsd)):
         raise TypeError("features should be a Tsd or TsdFrame.")
 
-    if feature_names is None:
-        feature_names = (
-            features.columns if isinstance(features, nap.TsdFrame) else ["0"]
+    feature_names = _normalize_feature_names(features, feature_names)
+    data, features, epochs = _normalize_epochs(data, features, epochs)
+    fs = _normalize_fs(features, epochs, fs)
+    range = _normalize_range(features, range)
+    _validate_boolean_flag(return_pandas, "return_pandas")
+    _validate_boolean_flag(return_counts, "return_counts")
+
+    occupancy, bin_edges = np.histogramdd(features, bins=bins, range=range)
+    keys = (
+        data.keys()
+        if isinstance(data, nap.TsGroup)
+        else data.columns if isinstance(data, nap.TsdFrame) else [0]
+    )
+
+    if isinstance(data, (nap.TsGroup, nap.Ts)):
+        tcs, data = _compute_spike_tuning_curves(
+            data,
+            keys,
+            features,
+            bin_edges,
+            occupancy,
+            fs,
+            return_counts,
         )
     else:
-        if (
-            not hasattr(feature_names, "__len__")
-            or isinstance(feature_names, str)
-            or not all(isinstance(n, str) for n in feature_names)
-        ):
-            raise TypeError("feature_names should be a list of strings.")
-        if len(feature_names) != (
-            1 if isinstance(features, nap.Tsd) else features.shape[-1]
-        ):
-            raise ValueError("feature_names should match the number of features.")
-
-    if epochs is None:
-        epochs = features.time_support
-    elif isinstance(epochs, nap.IntervalSet):
-        features = features.restrict(epochs)
-    else:
-        raise TypeError("epochs should be an IntervalSet.")
-    data = data.restrict(epochs)
-
-    if fs is None:
-        fs = 1 / np.mean(features.time_diff(epochs=epochs).values)
-    if not isinstance(fs, (int, float)):
-        raise TypeError("fs should be a number (int or float)")
-
-    if range is not None and isinstance(range, tuple):
-        if features.ndim == 1 or features.shape[1] == 1:
-            range = [range]
-        else:
-            raise ValueError(
-                "range should be a sequence of tuples, one for each feature."
-            )
-
-    if (
-        return_pandas != 1
-        and return_pandas != 0
-        and not isinstance(return_pandas, bool)
-    ):
-        raise TypeError("return_pandas should be a boolean.")
-
-    if (
-        return_counts != 1
-        and return_counts != 0
-        and not isinstance(return_counts, bool)
-    ):
-        raise TypeError("return_counts should be a boolean.")
-
-    return data, features, feature_names, fs, range
-
-
-def _get_tuning_curve_keys(data):
-    return data.keys() if isinstance(data, nap.TsGroup) else data.columns if isinstance(data, nap.TsdFrame) else [0]
-
-
-def _compute_tuning_curve_values(
-    data,
-    features,
-    occupancy,
-    bin_edges,
-    keys,
-    fs,
-    return_counts,
-):
-    tcs = np.zeros([len(keys), *occupancy.shape])
-    if isinstance(data, (nap.TsGroup, nap.Ts)):
-        if isinstance(data, nap.Ts):
-            data = nap.TsGroup({0: data})
-        for i, n in enumerate(keys):
-            if not isinstance(data[n], nap.Ts):
-                warnings.warn(
-                    f"TsGroup entry {n} was not a Ts, but treating it as one!"
-                )
-            tcs[i] = np.histogramdd(
-                data[n].value_from(features),
-                bins=bin_edges,
-            )[0]
-        with np.errstate(divide="ignore", invalid="ignore"):
-            if not return_counts:
-                tcs = (tcs / occupancy) * fs
-        return tcs
-
-    values = data.value_from(features)
-    if isinstance(data, nap.Tsd):
-        data = np.expand_dims(data.values, -1)
-    counts = np.histogramdd(values, bins=bin_edges)[0]
-    counts[counts == 0] = np.nan
-    for i, n in enumerate(keys):
-        tcs[i] = np.histogramdd(
-            values,
-            weights=data[:, i],
-            bins=bin_edges,
-        )[0]
-    tcs /= counts
-    tcs[np.isnan(tcs)] = 0.0
-    tcs[:, occupancy == 0.0] = np.nan
-    return tcs
-
-
-def _build_tuning_curve_dataarray(
-    tcs,
-    occupancy,
-    bin_edges,
-    keys,
-    feature_names,
-    fs,
-    data,
-):
-    import xarray as xr
+        tcs = _compute_rate_tuning_curves(data, keys, features, bin_edges, occupancy)
 
     attrs = {"occupancy": occupancy, "bin_edges": bin_edges, "fs": fs}
     if isinstance(data, nap.TsGroup):
         attrs["rates"] = data.rates
-    return xr.DataArray(
-        tcs,
-        coords={
-            "unit": keys,
-            **{
-                str(feature_name): e[:-1] + np.diff(e) / 2
-                for feature_name, e in zip(feature_names, bin_edges)
-            },
-        },
-        attrs=attrs,
-    )
+
+    tcs = _build_tuning_curves_dataarray(tcs, keys, feature_names, bin_edges, attrs)
+    return tcs.to_pandas().T if return_pandas else tcs
 
 
 def compute_response_per_epoch(data, epochs_dict, return_pandas=False):
@@ -617,67 +590,97 @@ def compute_mutual_information(tuning_curves, rates=None):
 # =====================================================================================
 
 
+def _validate_feature(feature):
+    if not isinstance(feature, (nap.Tsd, nap.TsdFrame)):
+        raise TypeError("feature should be a Tsd (or TsdFrame with 1 column only)")
+    if isinstance(feature, nap.TsdFrame) and not feature.shape[1] == 1:
+        raise ValueError("feature should be a Tsd (or TsdFrame with 1 column only)")
+
+
+def _validate_features(features):
+    if not isinstance(features, nap.TsdFrame):
+        raise TypeError("features should be a TsdFrame with 2 columns")
+    if not features.shape[1] == 2:
+        raise ValueError("features should have 2 columns only.")
+
+
+def _validate_nb_bins(nb_bins):
+    if not isinstance(nb_bins, (int, tuple)):
+        raise TypeError(
+            "nb_bins should be of type int (or tuple with (int, int) for 2D tuning curves)."
+        )
+
+
+def _validate_group(group):
+    if not isinstance(group, nap.TsGroup):
+        raise TypeError("group should be a TsGroup.")
+
+
+def _validate_ep(ep):
+    if not isinstance(ep, nap.IntervalSet):
+        raise TypeError("ep should be an IntervalSet")
+
+
+def _validate_minmax(minmax):
+    if not isinstance(minmax, Iterable):
+        raise TypeError("minmax should be a tuple/list of 2 numbers")
+
+
+def _validate_dict_ep(dict_ep):
+    if not isinstance(dict_ep, dict):
+        raise TypeError("dict_ep should be a dictionary of IntervalSet")
+    if not all(isinstance(v, nap.IntervalSet) for v in dict_ep.values()):
+        raise TypeError("dict_ep argument should contain only IntervalSet.")
+
+
+def _validate_tc(tc):
+    if not isinstance(tc, (pd.DataFrame, np.ndarray)):
+        raise TypeError(
+            "Argument tc should be of type pandas.DataFrame or numpy.ndarray"
+        )
+
+
+def _validate_dict_tc(dict_tc):
+    if not isinstance(dict_tc, (dict, np.ndarray)):
+        raise TypeError(
+            "Argument dict_tc should be a dictionary of numpy.ndarray or numpy.ndarray."
+        )
+
+
+def _validate_bitssec(bitssec):
+    if not isinstance(bitssec, bool):
+        raise TypeError("Argument bitssec should be of type bool")
+
+
+def _validate_tsdframe(tsdframe):
+    if not isinstance(tsdframe, (nap.Tsd, nap.TsdFrame)):
+        raise TypeError("Argument tsdframe should be of type Tsd or TsdFrame.")
+
+
 def _validate_tuning_inputs(func):
+    validators = {
+        "feature": _validate_feature,
+        "features": _validate_features,
+        "nb_bins": _validate_nb_bins,
+        "group": _validate_group,
+        "ep": _validate_ep,
+        "minmax": _validate_minmax,
+        "dict_ep": _validate_dict_ep,
+        "tc": _validate_tc,
+        "dict_tc": _validate_dict_tc,
+        "bitssec": _validate_bitssec,
+        "tsdframe": _validate_tsdframe,
+    }
+
     @wraps(func)
     def wrapper(*args, **kwargs):
         # Validate each positional argument
         sig = inspect.signature(func)
         kwargs = sig.bind_partial(*args, **kwargs).arguments
 
-        if "feature" in kwargs:
-            if not isinstance(kwargs["feature"], (nap.Tsd, nap.TsdFrame)):
-                raise TypeError(
-                    "feature should be a Tsd (or TsdFrame with 1 column only)"
-                )
-            if (
-                isinstance(kwargs["feature"], nap.TsdFrame)
-                and not kwargs["feature"].shape[1] == 1
-            ):
-                raise ValueError(
-                    "feature should be a Tsd (or TsdFrame with 1 column only)"
-                )
-        if "features" in kwargs:
-            if not isinstance(kwargs["features"], nap.TsdFrame):
-                raise TypeError("features should be a TsdFrame with 2 columns")
-            if not kwargs["features"].shape[1] == 2:
-                raise ValueError("features should have 2 columns only.")
-        if "nb_bins" in kwargs:
-            if not isinstance(kwargs["nb_bins"], (int, tuple)):
-                raise TypeError(
-                    "nb_bins should be of type int (or tuple with (int, int) for 2D tuning curves)."
-                )
-        if "group" in kwargs:
-            if not isinstance(kwargs["group"], nap.TsGroup):
-                raise TypeError("group should be a TsGroup.")
-        if "ep" in kwargs:
-            if not isinstance(kwargs["ep"], nap.IntervalSet):
-                raise TypeError("ep should be an IntervalSet")
-        if "minmax" in kwargs:
-            if not isinstance(kwargs["minmax"], Iterable):
-                raise TypeError("minmax should be a tuple/list of 2 numbers")
-        if "dict_ep" in kwargs:
-            if not isinstance(kwargs["dict_ep"], dict):
-                raise TypeError("dict_ep should be a dictionary of IntervalSet")
-            if not all(
-                isinstance(v, nap.IntervalSet) for v in kwargs["dict_ep"].values()
-            ):
-                raise TypeError("dict_ep argument should contain only IntervalSet.")
-        if "tc" in kwargs:
-            if not isinstance(kwargs["tc"], (pd.DataFrame, np.ndarray)):
-                raise TypeError(
-                    "Argument tc should be of type pandas.DataFrame or numpy.ndarray"
-                )
-        if "dict_tc" in kwargs:
-            if not isinstance(kwargs["dict_tc"], (dict, np.ndarray)):
-                raise TypeError(
-                    "Argument dict_tc should be a dictionary of numpy.ndarray or numpy.ndarray."
-                )
-        if "bitssec" in kwargs:
-            if not isinstance(kwargs["bitssec"], bool):
-                raise TypeError("Argument bitssec should be of type bool")
-        if "tsdframe" in kwargs:
-            if not isinstance(kwargs["tsdframe"], (nap.Tsd, nap.TsdFrame)):
-                raise TypeError("Argument tsdframe should be of type Tsd or TsdFrame.")
+        for name, validator in validators.items():
+            if name in kwargs:
+                validator(kwargs[name])
         # Call the original function with validated inputs
         return func(**kwargs)
 

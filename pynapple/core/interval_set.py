@@ -283,8 +283,7 @@ class IntervalSet(NDArrayOperatorsMixin, _MetadataMixin):
 
         return start, end, drop_meta
 
-    @staticmethod
-    def _fix_intervals(start, end, metadata, drop_meta):
+    def _apply_jitfix(self, start, end, metadata, drop_meta):
         data, to_warn = _jitfix_iset(start, end)
 
         if np.any(to_warn):
@@ -295,21 +294,6 @@ class IntervalSet(NDArrayOperatorsMixin, _MetadataMixin):
                 warnings.warn("epochs have changed, dropping metadata.", stacklevel=3)
 
         return data, drop_meta
-
-    def _finalize_init(self, data, metadata, drop_meta):
-        self.values = data
-        self.index = np.arange(data.shape[0], dtype="int")
-        self.columns = np.array(["start", "end"])
-        self.nap_class = self.__class__.__name__
-        # initialize metadata to get all attributes before setting metadata
-        _MetadataMixin.__init__(self)
-        # to test compatibility with pandas
-        # self._metadata = pd.DataFrame(index=self.metadata_index)
-        self._class_attributes = self.__dir__()  # get list of all attributes
-        self._class_attributes.append("_class_attributes")  # add this property
-        self._initialized = True
-        if (drop_meta is False) and (metadata is not None) and len(metadata):
-            self.set_info(metadata)
 
     def __init__(
         self,
@@ -325,9 +309,137 @@ class IntervalSet(NDArrayOperatorsMixin, _MetadataMixin):
         start = TsIndex.format_timestamps(start, time_units)
         end = TsIndex.format_timestamps(end, time_units)
 
-        start, end, drop_meta = self._sort_timestamps(start, end, metadata)
-        data, drop_meta = self._fix_intervals(start, end, metadata, drop_meta)
-        self._finalize_init(data, metadata, drop_meta)
+        start, end, drop_meta = self._sort_and_validate(start, end, metadata)
+
+        data, drop_meta = self._apply_jitfix(start, end, metadata, drop_meta)
+
+        self._initialize_state(data)
+        self._finalize_metadata(metadata, drop_meta)
+
+    def _normalize_inputs(self, start, end, metadata):
+        if isinstance(start, IntervalSet):
+            return (
+                start.start.astype(np.float64),
+                start.end.astype(np.float64),
+                metadata,
+            )
+
+        if isinstance(start, pd.DataFrame):
+            return self._normalize_dataframe_input(start)
+
+        return self._normalize_start_end_inputs(start, end, metadata)
+
+    @staticmethod
+    def _normalize_dataframe_input(start):
+        assert "start" in start.columns and "end" in start.columns, """
+            DataFrame must contain columns name "start" and "end" for start and end times.                   
+            """
+        # try sorting the DataFrame by start times, preserving its end pair, as an effort to preserve metadata
+        # since metadata would be dropped if starts and ends are sorted separately
+        # note that if end times are still not sorted, metadata will be dropped
+        if np.any(start["start"].diff() < 0):
+            warnings.warn(
+                "DataFrame is not sorted by start times. Sorting it.", stacklevel=2
+            )
+            start = start.sort_values("start").reset_index(drop=True)
+
+        metadata = start.drop(columns=["start", "end"])
+        end = start["end"].values.astype(np.float64)
+        start = start["start"].values.astype(np.float64)
+        return start, end, metadata
+
+    def _normalize_start_end_inputs(self, start, end, metadata):
+        if end is None:
+            # Catch if start is not shape (0, 2)
+            if is_array_like(start) and start.shape == (0, 2):
+                start, end = np.array([]), np.array([])
+            else:
+                # Require iterable of (start, end) tuples
+                try:
+                    start_end_array = np.array(list(start)).reshape(-1, 2)
+                    start, end = zip(*start_end_array)
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        "Unable to Interpret the input. Please provide a list of start-end pairs."
+                    )
+
+        start = self._coerce_input_array(start, "start")
+        end = self._coerce_input_array(end, "end")
+
+        assert len(start) == len(end), "Starts end ends are not of the same length"
+        return start, end, metadata
+
+    @staticmethod
+    def _coerce_input_array(data, arg):
+        if isinstance(data, Number):
+            return np.array([data])
+        if isinstance(data, (list, tuple)):
+            return np.ravel(np.array(data))
+        if isinstance(data, pd.Series):
+            return data.values
+        if isinstance(data, np.ndarray):
+            return np.ravel(data)
+        if is_array_like(data):
+            return convert_to_numpy_array(data, arg)
+        raise RuntimeError(
+            "Unknown format for {}. Accepted formats are numpy.ndarray, list, tuple or any array-like objects.".format(
+                arg
+            )
+        )
+
+    def _sort_and_validate(self, start, end, metadata):
+        drop_meta = False
+        start, start_dropped = self._sort_if_needed(start, "start", metadata is not None)
+        end, end_dropped = self._sort_if_needed(end, "end", metadata is not None)
+        drop_meta = start_dropped or end_dropped
+        return start, end, drop_meta
+
+    @staticmethod
+    def _sort_if_needed(values, label, has_metadata):
+        if (np.diff(values) > 0).all():
+            return values, False
+
+        if has_metadata:
+            msg1 = "Cannot add metadata to unsorted {} times. ".format(label)
+            msg2 = " and dropping metadata"
+        else:
+            msg1 = ""
+            msg2 = ""
+
+        warnings.warn(
+            "{} is not sorted. {}Sorting it{}.".format(label, msg1, msg2),
+            stacklevel=2,
+        )
+        return np.sort(values), True
+
+    def _apply_jitfix(self, start, end, metadata, drop_meta):
+        data, to_warn = _jitfix_iset(start, end)
+
+        if np.any(to_warn):
+            msg = "\n".join(all_warnings[to_warn])
+            warnings.warn(msg, stacklevel=3)
+            if np.any(to_warn[1:]) and (metadata is not None):
+                drop_meta = True
+                warnings.warn("epochs have changed, dropping metadata.", stacklevel=3)
+
+        return data, drop_meta
+
+    def _initialize_state(self, data):
+        self.values = data
+        self.index = np.arange(data.shape[0], dtype="int")
+        self.columns = np.array(["start", "end"])
+        self.nap_class = self.__class__.__name__
+        # initialize metadata to get all attributes before setting metadata
+        _MetadataMixin.__init__(self)
+        # to test compatibility with pandas
+        # self._metadata = pd.DataFrame(index=self.metadata_index)
+        self._class_attributes = self.__dir__()  # get list of all attributes
+        self._class_attributes.append("_class_attributes")  # add this property
+        self._initialized = True
+
+    def _finalize_metadata(self, metadata, drop_meta):
+        if (drop_meta is False) and (metadata is not None) and len(metadata):
+            self.set_info(metadata)
 
     def __repr__(self):
         # Start by determining how many columns and rows.

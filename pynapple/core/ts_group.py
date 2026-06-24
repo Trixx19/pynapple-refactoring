@@ -190,17 +190,17 @@ class TsGroup(UserDict, _MetadataMixin):
     nap_class: str
     """The pynapple class name"""
 
-    def _validate_init_args(self, time_support, time_units, bypass_check):
+    @staticmethod
+    def _validate_init_args(time_support, time_units, bypass_check):
         if time_units not in ["s", "ms", "us"]:
             raise ValueError("Argument time_units should be 's', 'ms' or 'us'")
         if not isinstance(bypass_check, bool):
             raise TypeError("Argument bypass_check should be of type bool")
-
         if isinstance(time_support, IntervalSet):
             return True
         if time_support is not None:
             raise TypeError("Argument time_support should be of type IntervalSet")
-        return False
+            return False
 
     @staticmethod
     def _normalize_data_input(data):
@@ -209,30 +209,32 @@ class TsGroup(UserDict, _MetadataMixin):
         return data
 
     @staticmethod
-    def _coerce_integer_keys(data):
-        original_keys = list(data.keys())
+    def _convert_and_validate_keys(data):
         try:
-            keys = [int(k) for k in original_keys]
+            input_keys = [int(k) for k in data.keys()]
         except Exception:
             raise ValueError("All keys must be convertible to integer.")
 
-        # reject values that only look like integers after truncation
-        if not all(np.allclose(keys[j], float(k)) for j, k in enumerate(original_keys)):
+        # check that there were no floats with decimal points in keys.
+        # i.e. 0.5 is not a valid key
+        if not all(np.allclose(input_keys[j], float(k)) for j, k in enumerate(data.keys())):
             raise ValueError("All keys must have integer value!}")
 
-        if len(keys) != len(np.unique(keys)):
+        # check that we have the same num of unique keys
+        # {"0":val, 0:val} would be a problem...
+        if len(input_keys) != len(np.unique(input_keys)):
             raise ValueError("Two dictionary keys contain the same integer value!")
 
-        data = {keys[j]: data[k] for j, k in enumerate(original_keys)}
-        index = np.sort(keys)
-        return data, original_keys, index
+        normalized_data = {input_keys[j]: data[k] for j, k in enumerate(data.keys())}
+        index = np.sort(input_keys)
+        sort_index = np.argsort(input_keys)
+        return normalized_data, input_keys, index, sort_index
 
     @staticmethod
-    def _sort_metadata(metadata, kwargs, original_keys):
-        if len(original_keys) > 1:
-            sort_index = np.argsort(original_keys)
+    def _sort_metadata(metadata, kwargs, input_keys, sort_index):
+        if len(input_keys) > 1:
             if (metadata is not None) and (len(metadata) > 0):
-                if hasattr(metadata, "index") and np.all(metadata.index != original_keys):
+                if hasattr(metadata, "index") and np.all(metadata.index != input_keys):
                     # check that index matches before sort if index exists
                     raise ValueError(
                         "Metadata index does not match the index of the TsGroup."
@@ -247,8 +249,10 @@ class TsGroup(UserDict, _MetadataMixin):
 
         return metadata, kwargs
 
-    def _convert_elements_to_ts(self, data, time_support, time_units):
-        for k in self.index:
+    @staticmethod
+    def _coerce_data_to_ts(data, index, time_support, time_units):
+        # Transform elements to Ts/Tsd objects
+        for k in index:
             if not isinstance(data[k], _Base):
                 if isinstance(data[k], list) or is_array_like(data[k]):
                     warnings.warn(
@@ -262,42 +266,24 @@ class TsGroup(UserDict, _MetadataMixin):
                         time_support=time_support,
                         time_units=time_units,
                     )
-
         return data
 
-    def _resolve_time_support(self, data, time_support, passed_time_support, bypass_check):
+    @staticmethod
+    def _apply_time_support(data, index, time_support, bypass_check, passed_time_support):
         if passed_time_support:
-            self.time_support = time_support
             if not bypass_check:
-                data = {k: data[k].restrict(self.time_support) for k in self.index}
-        else:
-            # Otherwise do the union of all time supports
-            time_support = _union_intervals([data[k].time_support for k in self.index])
-            if len(time_support) == 0:
-                raise RuntimeError(
-                    "Union of time supports is empty. Consider passing a time support as argument."
-                )
-            self.time_support = time_support
-            if not bypass_check:
-                data = {k: data[k].restrict(self.time_support) for k in self.index}
+                data = {k: data[k].restrict(time_support) for k in index}
+            return data, time_support
 
-        return data
-
-    def _finalize_init(self, data):
-        UserDict.__init__(self, data)
-        rate = np.array([data[k].rate for k in self.index])
-        self._metadata["rate"] = rate
-        self.nap_class = self.__class__.__name__
-        # grab current attributes before adding metadata
-        self._class_attributes = self.__dir__()
-        self._class_attributes.append("_class_attributes")  # add this property
-
-        # Making the TsGroup non mutable
-        self._initialized = True
-
-        # Adding manually the rate column if data is empty.
-        if len(data) == 0:
-            self._metadata["rate"] = np.array([])
+        # Otherwise do the union of all time supports
+        time_support = _union_intervals([data[k].time_support for k in index])
+        if len(time_support) == 0:
+            raise RuntimeError(
+                "Union of time supports is empty. Consider passing a time support as argument."
+            )
+        if not bypass_check:
+            data = {k: data[k].restrict(time_support) for k in index}
+        return data, time_support
 
     def __init__(
         self,
@@ -316,39 +302,45 @@ class TsGroup(UserDict, _MetadataMixin):
         self.__dict__["_initialized"] = False
 
         data = self._normalize_data_input(data)
-
-        # convert all keys to integer
-        data, original_keys, keys = self._coerce_integer_keys(data)
+        data, input_keys, keys, sort_index = self._convert_and_validate_keys(data)
         self.index = keys
 
         # Make sure data dict and index are ordered the same
         data = {k: data[k] for k in self.index}
-
-        # Also sort metadata if more than one key
-        metadata, kwargs = self._sort_metadata(metadata, kwargs, original_keys)
+        metadata, kwargs = self._sort_metadata(metadata, kwargs, input_keys, sort_index)
 
         # initialize metadata
         _MetadataMixin.__init__(self)
-        # to test compatibility with pandas
-        # self._metadata = pd.DataFrame(index=self.metadata_index)
-
-        # Transform elements to Ts/Tsd objects
-        data = self._convert_elements_to_ts(data, time_support, time_units)
-
-        # If time_support is passed, all elements of data are restricted prior to init
-        data = self._resolve_time_support(
-            data, time_support, passed_time_support, bypass_check
+        data = self._coerce_data_to_ts(data, self.index, time_support, time_units)
+        data, time_support = self._apply_time_support(
+            data, self.index, time_support, bypass_check, passed_time_support
         )
+        self.time_support = time_support
 
         self._finalize_init(data)
 
-        # Trying to add argument as metainfo
         if len(kwargs):
             warnings.warn(
                 "initializing metadata with variable keyword arguments may be unsupported in a future version of Pynapple. Instead, initialize using the metadata argument.",
                 FutureWarning,
             )
         self.set_info(metadata, **kwargs)
+
+    def _finalize_init(self, data):
+        UserDict.__init__(self, data)
+        rate = np.array([data[k].rate for k in self.index])
+        self._metadata["rate"] = rate
+        self.nap_class = self.__class__.__name__
+        # grab current attributes before adding metadata
+        self._class_attributes = self.__dir__()
+        self._class_attributes.append("_class_attributes")  # add this property
+
+        # Making the TsGroup non mutable
+        self._initialized = True
+
+        # Adding manually the rate column if data is empty.
+        if len(data) == 0:
+            self._metadata["rate"] = np.array([])
 
     """
     Base functions
@@ -728,6 +720,31 @@ class TsGroup(UserDict, _MetadataMixin):
         cols = self._metadata.columns[1:]  # .drop("rate")
         return TsGroup(newgr, time_support=ep, metadata=self._metadata[cols])
 
+    def _normalize_count_args(self, bin_size, ep, time_units, dtype):
+        if bin_size is not None:
+            if isinstance(bin_size, int):
+                bin_size = float(bin_size)
+            if not isinstance(bin_size, float):
+                raise TypeError("bin_size argument should be float or int.")
+
+        if not isinstance(time_units, str) or time_units not in ["s", "ms", "us"]:
+            raise ValueError("time_units argument should be 's', 'ms' or 'us'.")
+
+        if ep is None:
+            ep = self.time_support
+        if not isinstance(ep, IntervalSet):
+            raise TypeError("ep argument should be of type IntervalSet")
+
+        if dtype is None:
+            dtype = np.dtype(np.int64)
+        else:
+            try:
+                dtype = np.dtype(dtype)
+            except Exception:
+                raise ValueError(f"{dtype} is not a valid numpy dtype.")
+
+        return bin_size, ep, dtype
+
     @add_or_convert_metadata
     def count(self, bin_size=None, ep=None, time_units="s", dtype=None):
         """
@@ -798,27 +815,7 @@ class TsGroup(UserDict, _MetadataMixin):
         dtype: int64, shape: (100, 3)
 
         """
-        if bin_size is not None:
-            if isinstance(bin_size, int):
-                bin_size = float(bin_size)
-            if not isinstance(bin_size, float):
-                raise TypeError("bin_size argument should be float or int.")
-
-        if not isinstance(time_units, str) or time_units not in ["s", "ms", "us"]:
-            raise ValueError("time_units argument should be 's', 'ms' or 'us'.")
-
-        if ep is None:
-            ep = self.time_support
-        if not isinstance(ep, IntervalSet):
-            raise TypeError("ep argument should be of type IntervalSet")
-
-        if dtype is None:
-            dtype = np.dtype(np.int64)
-        else:
-            try:
-                dtype = np.dtype(dtype)
-            except Exception:
-                raise ValueError(f"{dtype} is not a valid numpy dtype.")
+        bin_size, ep, dtype = self._normalize_count_args(bin_size, ep, time_units, dtype)
 
         starts = ep.start
         ends = ep.end
@@ -947,36 +944,7 @@ class TsGroup(UserDict, _MetadataMixin):
             "Unknown argument format" ; if argument is not a string, list, numpy.ndarray or pandas.Series
 
         """
-        if len(args):
-            if isinstance(args[0], pd.Series):
-                if np.array_equal(self._metadata.index, args[0].index):
-                    _values = args[0].values.flatten()
-                else:
-                    raise RuntimeError("Index are not equals")
-            elif isinstance(args[0], (np.ndarray, list)):
-                if self._metadata.shape[0] == len(args[0]):
-                    _values = np.array(args[0])
-                else:
-                    raise RuntimeError("Values is not the same length.")
-            elif isinstance(args[0], str):
-                if args[0] in self._metadata.columns:
-                    _values = self._metadata[args[0]]
-                else:
-                    raise RuntimeError(
-                        "Key {} not in metadata of TsGroup".format(args[0])
-                    )
-            else:
-                possible_keys = []
-                for k, d in self._metadata.dtypes.items():
-                    if "int" in str(d) or "float" in str(d):
-                        possible_keys.append(k)
-                raise RuntimeError(
-                    "Unknown argument format. Must be pandas.Series, numpy.ndarray or a string from one of the following values : [{}]".format(
-                        ", ".join(possible_keys)
-                    )
-                )
-        else:
-            _values = self.index
+        _values = self._normalize_to_tsd_values(*args)
 
         nt = 0
         for n in self.index:
@@ -995,6 +963,37 @@ class TsGroup(UserDict, _MetadataMixin):
         toreturn = Tsd(t=times[idx], d=data[idx], time_support=self.time_support)
 
         return toreturn
+
+    def _normalize_to_tsd_values(self, *args):
+        if len(args) == 0:
+            return self.index
+
+        values = args[0]
+
+        if isinstance(values, pd.Series):
+            if np.array_equal(self._metadata.index, values.index):
+                return values.values.flatten()
+            raise RuntimeError("Index are not equals")
+
+        if isinstance(values, (np.ndarray, list)):
+            if self._metadata.shape[0] == len(values):
+                return np.array(values)
+            raise RuntimeError("Values is not the same length.")
+
+        if isinstance(values, str):
+            if values in self._metadata.columns:
+                return self._metadata[values]
+            raise RuntimeError("Key {} not in metadata of TsGroup".format(values))
+
+        possible_keys = []
+        for k, d in self._metadata.dtypes.items():
+            if "int" in str(d) or "float" in str(d):
+                possible_keys.append(k)
+        raise RuntimeError(
+            "Unknown argument format. Must be pandas.Series, numpy.ndarray or a string from one of the following values : [{}]".format(
+                ", ".join(possible_keys)
+            )
+        )
 
     @add_or_convert_metadata
     def trial_count(
@@ -1381,40 +1380,17 @@ class TsGroup(UserDict, _MetadataMixin):
         items = tsg1.items()
         keys = set(tsg1.keys())
         metadata = tsg1._metadata.copy()
+        time_support = None if reset_time_support else tsg1.time_support
 
         for i, tsg in enumerate(tsgroups[1:]):
-            if not ignore_metadata:
-                if tsg1.metadata_columns != tsg.metadata_columns:
-                    raise ValueError(
-                        f"TsGroup at position {i + 2} has different metadata columns from previous TsGroup objects. "
-                        "Set `ignore_metadata=True` to bypass the check."
-                    )
-                metadata.merge(tsg._metadata)
-
-            if not reset_index:
-                key_overlap = keys.intersection(tsg.keys())
-                if key_overlap:
-                    raise ValueError(
-                        f"TsGroup at position {i + 2} has overlapping keys {key_overlap} with previous TsGroup objects. "
-                        "Set `reset_index=True` to bypass the check."
-                    )
-                keys.update(tsg.keys())
-
-            if reset_time_support:
-                time_support = None
-            else:
-                if not np.allclose(
-                    tsg1.time_support.as_units("s").to_numpy(),
-                    tsg.time_support.as_units("s").to_numpy(),
-                    atol=10 ** (-nap_config.time_index_precision),
-                    rtol=0,
-                ):
-                    raise ValueError(
-                        f"TsGroup at position {i + 2} has different time support from previous TsGroup objects. "
-                        "Set `reset_time_support=True` to bypass the check."
-                    )
-                time_support = tsg1.time_support
-
+            position = i + 2
+            TsGroup._validate_merge_metadata(
+                tsg1, tsg, metadata, ignore_metadata, position
+            )
+            TsGroup._validate_merge_keys(keys, tsg, reset_index, position)
+            TsGroup._validate_merge_time_support(
+                tsg1, tsg, reset_time_support, position
+            )
             items.extend(tsg.items())
 
         if reset_index:
@@ -1432,6 +1408,49 @@ class TsGroup(UserDict, _MetadataMixin):
                 time_support=time_support,
                 bypass_check=False,
                 metadata=metadata,
+            )
+
+    @staticmethod
+    def _validate_merge_metadata(tsg1, tsg, metadata, ignore_metadata, position):
+        if ignore_metadata:
+            return
+
+        if tsg1.metadata_columns != tsg.metadata_columns:
+            raise ValueError(
+                f"TsGroup at position {position} has different metadata columns from previous TsGroup objects. "
+                "Set `ignore_metadata=True` to bypass the check."
+            )
+
+        metadata.merge(tsg._metadata)
+
+    @staticmethod
+    def _validate_merge_keys(keys, tsg, reset_index, position):
+        if reset_index:
+            return
+
+        key_overlap = keys.intersection(tsg.keys())
+        if key_overlap:
+            raise ValueError(
+                f"TsGroup at position {position} has overlapping keys {key_overlap} with previous TsGroup objects. "
+                "Set `reset_index=True` to bypass the check."
+            )
+
+        keys.update(tsg.keys())
+
+    @staticmethod
+    def _validate_merge_time_support(tsg1, tsg, reset_time_support, position):
+        if reset_time_support:
+            return
+
+        if not np.allclose(
+            tsg1.time_support.as_units("s").to_numpy(),
+            tsg.time_support.as_units("s").to_numpy(),
+            atol=10 ** (-nap_config.time_index_precision),
+            rtol=0,
+        ):
+            raise ValueError(
+                f"TsGroup at position {position} has different time support from previous TsGroup objects. "
+                "Set `reset_time_support=True` to bypass the check."
             )
 
     def merge(
@@ -2058,6 +2077,32 @@ class TsGroup(UserDict, _MetadataMixin):
         """
         return _MetadataMixin.groupby_apply(self, by, func, input_key, **func_kwargs)
 
+    @staticmethod
+    def _subsample_indices(n_timestamps, fraction, rng):
+        if n_timestamps == 0:
+            return np.array([], dtype=int)
+
+        n_keep = int(np.round(n_timestamps * fraction))
+        if n_keep == 0:
+            return np.array([], dtype=int)
+        if n_keep >= n_timestamps:
+            return np.arange(n_timestamps)
+
+        random_values = rng.random(n_timestamps)
+        return np.sort(np.argpartition(random_values, n_keep)[:n_keep])
+
+    @staticmethod
+    def _build_subsampled_item(ts, idx, time_support):
+        new_times = ts.index.values[idx] if len(idx) > 0 else np.array([])
+        if hasattr(ts, "values"):
+            return Tsd(
+                t=new_times,
+                d=ts.values[idx] if len(idx) > 0 else np.array([]),
+                time_support=time_support,
+            )
+
+        return Ts(t=new_times, time_support=time_support)
+
     def subsample(self, fraction, seed=None):
         """
         Randomly subsample timestamps in each element of the TsGroup.
@@ -2119,39 +2164,8 @@ class TsGroup(UserDict, _MetadataMixin):
         newgr = {}
         for k in self.index:
             ts = self.data[k]
-            n_timestamps = len(ts)
-            if n_timestamps > 0:
-                # Calculate exact number to keep
-                n_keep = int(np.round(n_timestamps * fraction))
-                if n_keep == 0:
-                    idx = np.array([], dtype=int)
-                elif n_keep >= n_timestamps:
-                    idx = np.arange(n_timestamps)
-                else:
-                    # Use argpartition for O(n) selection of exactly n_keep indices
-                    random_values = rng.random(n_timestamps)
-                    idx = np.sort(np.argpartition(random_values, n_keep)[:n_keep])
-                new_times = ts.index.values[idx] if len(idx) > 0 else np.array([])
-                if hasattr(ts, "values"):
-                    # For Tsd objects, preserve the data values
-                    newgr[k] = Tsd(
-                        t=new_times,
-                        d=ts.values[idx] if len(idx) > 0 else np.array([]),
-                        time_support=self.time_support,
-                    )
-                else:
-                    # For Ts objects
-                    newgr[k] = Ts(t=new_times, time_support=self.time_support)
-            else:
-                # Keep empty Ts/Tsd with same time support
-                if hasattr(ts, "values"):
-                    newgr[k] = Tsd(
-                        t=np.array([]),
-                        d=np.array([]),
-                        time_support=self.time_support,
-                    )
-                else:
-                    newgr[k] = Ts(t=np.array([]), time_support=self.time_support)
+            idx = self._subsample_indices(len(ts), fraction, rng)
+            newgr[k] = self._build_subsampled_item(ts, idx, self.time_support)
 
         cols = self._metadata.columns[1:]  # drop "rate"
         return TsGroup(

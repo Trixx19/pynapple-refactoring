@@ -664,6 +664,36 @@ class NeoSignalInterface:
     def __repr__(self):
         return f"<NeoSignalInterface: {self.nap_type.__name__}, shape={self.shape}, dtype={self.dtype}>"
 
+    def _get_segment_signal(self, segment):
+        """Return the signal from a segment matching the configured type."""
+        if self.is_analog:
+            return segment.analogsignals[self._sig_num]
+        return segment.irregularlysampledsignals[self._sig_num]
+
+    def _empty_range_result(self):
+        """Return an empty array with the correct output shape."""
+        if len(self.shape) == 1:
+            return np.array([], dtype=self.dtype)
+
+        return np.empty((0,) + self.shape[1:], dtype=self.dtype)
+
+    def _load_segment_range(self, seg, seg_idx, local_start, local_stop):
+        """Load a slice from one segment, with time-slice fallback."""
+        signal = self._get_segment_signal(seg)
+
+        try:
+            if hasattr(signal, "load"):
+                signal = signal.load()
+            return signal[local_start:local_stop].magnitude
+        except (MemoryError, AttributeError):
+            # Fall back to time slicing when direct indexing is not available.
+            seg_start = self._cache.segment_offsets[seg_idx]
+            seg_end = seg_start + self._cache.segment_n_samples[seg_idx]
+            seg_times = self._cache.times[seg_start:seg_end]
+            t_start = seg_times[local_start]
+            t_stop = seg_times[min(local_stop, len(seg_times) - 1)]
+            return signal.time_slice(t_start, t_stop).magnitude
+
     @property
     def is_analog(self):
         return self._meta.is_analog
@@ -749,11 +779,7 @@ class NeoSignalInterface:
             The loaded data
         """
         if start_idx >= stop_idx:
-            # Return empty array with correct shape
-            if len(self.shape) == 1:
-                return np.array([], dtype=self.dtype)
-            else:
-                return np.empty((0,) + self.shape[1:], dtype=self.dtype)
+            return self._empty_range_result()
 
         data_chunks = []
 
@@ -770,32 +796,12 @@ class NeoSignalInterface:
             local_stop = min(self._cache.segment_n_samples[seg_idx], stop_idx - seg_start)
 
             # Load data from this segment
-            if self.is_analog:
-                signal = seg.analogsignals[self._sig_num]
-            else:
-                signal = seg.irregularlysampledsignals[self._sig_num]
-
-            # Try to load with indexing, fall back to time slicing
-            try:
-                if hasattr(signal, "load"):
-                    loaded = signal.load()
-                    chunk = loaded[local_start:local_stop].magnitude
-                else:
-                    chunk = signal[local_start:local_stop].magnitude
-            except (MemoryError, AttributeError):
-                # Fall back to time slicing
-                seg_times = self._cache.times[seg_start:seg_end]
-                t_start = seg_times[local_start]
-                t_stop = seg_times[min(local_stop, len(seg_times) - 1)]
-                chunk = signal.time_slice(t_start, t_stop).magnitude
-
-            data_chunks.append(chunk)
+            data_chunks.append(
+                self._load_segment_range(seg, seg_idx, local_start, local_stop)
+            )
 
         if not data_chunks:
-            if len(self.shape) == 1:
-                return np.array([], dtype=self.dtype)
-            else:
-                return np.empty((0,) + self.shape[1:], dtype=self.dtype)
+            return self._empty_range_result()
 
         result = np.concatenate(data_chunks, axis=0)
 

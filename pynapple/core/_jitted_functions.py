@@ -100,94 +100,115 @@ def jitvaluefrom(
     starts,
     mode,
 ):
-    """
-    Compute value_from in a loop.
+    if mode == 0:
+        return _jitvaluefrom_before(
+            time_array,
+            time_target_array,
+            count,
+            count_target,
+            starts,
+        )
+    elif mode == 1:
+        return _jitvaluefrom_closest(
+            time_array,
+            time_target_array,
+            count,
+            count_target,
+            starts,
+        )
+    else:
+        return _jitvaluefrom_after(
+            time_array,
+            time_target_array,
+            count,
+            count_target,
+            starts,
+        )
 
-    Parameters
-    ----------
-    time_array : ndarray
-        The time array for the input.
-    time_target_array : ndarray
-        The time array for the target.
-    count : ndarray[int]
-        Count how many input time points are in each epoch. len(count) is the number of epochs.
-    count_target  ndarray[int]
-        Count how many target time points are in each epoch. len(count_target) is the number of epochs.
-    starts : ndarray[int]
-        Start time for each epoch.
-    mode : int
-        0 before, 1 closest, 2 after.
-    """
-    # Get the number of intervals, the length of time_array, and the length of time_target_array
+
+@jit(nopython=True, cache=True)
+def _jitvaluefrom_before(time_array, time_target_array, count, count_target, starts):
     m = starts.shape[0]
     n = time_array.shape[0]
-    d = time_target_array.shape[0]
-
-    # Initialize an array to store indices with NaN as default values
     idx = np.full(n, np.nan)
 
-    # Proceed only if both time arrays have elements
-    if n > 0 and d > 0:
-        for k in range(m):  # Iterate through each epoch
-            # Check if there are time stamps in both arrays
+    if n > 0 and time_target_array.shape[0] > 0:
+        for k in range(m):
             if count[k] > 0 and count_target[k] > 0:
                 t = np.sum(count[0:k])
                 i = np.sum(count_target[0:k])
-                maxt = (
-                    t + count[k]
-                )  # Maximum index for time_array in the current interval
-                maxi = i + count_target[k]  # Maximum index in the target array
-                while t < maxt:  # Iterate over the current interval in time_array
-                    # compute signed or abs temporal difference
-                    # abs for closest, signed for after or before
-                    if mode != 1:
-                        interval = time_target_array[i] - time_array[t]
-                    else:
-                        interval = abs(time_target_array[i] - time_array[t])
+                maxt = t + count[k]
+                maxi = i + count_target[k]
+                last_idx = np.nan
 
-                    idx[t] = float(i)  # Store the initial index
+                while t < maxt:
+                    while i < maxi and time_target_array[i] <= time_array[t]:
+                        last_idx = float(i)
+                        i += 1
 
-                    i += 1
-                    while (
-                        i < maxi
-                    ):  # Iterate through time_target_array within the current interval
-                        # check the next temporal difference
-                        if mode != 1:
-                            new_interval = time_target_array[i] - time_array[t]
-                            break_cond = (
-                                ((new_interval > 0) and (interval <= 0))
-                                or (interval >= 0)
-                                if mode == 0
-                                else ((new_interval < 0) and (interval >= 0))
-                                or (interval >= 0)
-                            )
-                            nan_cond = interval > 0 if mode == 0 else new_interval < 0
-                        else:
-                            new_interval = abs(time_target_array[i] - time_array[t])
-                            break_cond = new_interval > interval
-                            nan_cond = False
+                    idx[t] = last_idx
+                    t += 1
 
-                        if break_cond:  # Break if the new interval is larger
-                            if nan_cond:
-                                idx[t] = np.nan
-                            break
-                        else:
-                            idx[t] = float(i)  # Update the index with the closer target
-                            interval = new_interval  # Update the interval
-                            i += 1
+    return idx
+
+
+@jit(nopython=True, cache=True)
+def _jitvaluefrom_after(time_array, time_target_array, count, count_target, starts):
+    m = starts.shape[0]
+    n = time_array.shape[0]
+    idx = np.full(n, np.nan)
+
+    if n > 0 and time_target_array.shape[0] > 0:
+        for k in range(m):
+            if count[k] > 0 and count_target[k] > 0:
+                t = np.sum(count[0:k])
+                i = np.sum(count_target[0:k])
+                maxt = t + count[k]
+                maxi = i + count_target[k]
+
+                while t < maxt:
+                    while i < maxi and time_target_array[i] < time_array[t]:
+                        i += 1
 
                     if i == maxi:
-                        if mode == 2:
-                            new_interval = time_target_array[i - 1] - time_array[t]
-                            nan_cond = new_interval < 0
-                        elif mode == 0:
-                            nan_cond = interval > 0
-                        else:
-                            nan_cond = False
-                        if nan_cond:
-                            idx[t] = np.nan
-                    i -= 1  # Revert to the last valid index
-                    t += 1  # Move to the next time point
+                        idx[t] = np.nan
+                    else:
+                        idx[t] = float(i)
+                    t += 1
+
+    return idx
+
+
+@jit(nopython=True, cache=True)
+def _jitvaluefrom_closest(time_array, time_target_array, count, count_target, starts):
+    m = starts.shape[0]
+    n = time_array.shape[0]
+    idx = np.full(n, np.nan)
+
+    if n > 0 and time_target_array.shape[0] > 0:
+        for k in range(m):
+            if count[k] > 0 and count_target[k] > 0:
+                t = np.sum(count[0:k])
+                start_i = np.sum(count_target[0:k])
+                i = start_i
+                maxt = t + count[k]
+                maxi = start_i + count_target[k]
+
+                while t < maxt:
+                    interval = abs(time_target_array[i] - time_array[t])
+                    idx[t] = float(i)
+                    i += 1
+
+                    while i < maxi:
+                        new_interval = abs(time_target_array[i] - time_array[t])
+                        if new_interval > interval:
+                            break
+                        idx[t] = float(i)
+                        interval = new_interval
+                        i += 1
+
+                    i -= 1
+                    t += 1
 
     return idx  # Return the array of indices
 
@@ -386,9 +407,6 @@ def jitthreshold(time_array, data_array, starts, ends, thr, method="above"):
 
     ix = _jitthreshold_mask(data_array, thr, method)
 
-    k = 0
-    t = 0
-
     ix_start = np.zeros(n, dtype=np.bool_)
     ix_end = np.zeros(n, dtype=np.bool_)
     new_start = np.zeros(n, dtype=np.float64)
@@ -397,38 +415,13 @@ def jitthreshold(time_array, data_array, starts, ends, thr, method="above"):
     if n == 0:
         return (time_array[ix], data_array[ix], new_start[ix_start], new_end[ix_end])
 
-    while k < len(starts) and time_array[t] < starts[k]:
-        k += 1
-
-    if ix[t]:
-        ix_start[t] = 1
-        new_start[t] = time_array[t]
-
     if n == 1:
-        if ix[t]:
-            ix_end[t] = 1
-            new_end[t] = time_array[t]
+        _jitthreshold_init_single_point(
+            time_array, ix, ix_start, new_start, ix_end, new_end
+        )
         return (time_array[ix], data_array[ix], new_start[ix_start], new_end[ix_end])
 
-    t += 1
-
-    while t < n - 1:
-        k = _jitthreshold_transition(
-            time_array,
-            ix,
-            ix_start,
-            ix_end,
-            new_start,
-            new_end,
-            t,
-            k,
-            ends,
-        )
-        t += 1
-
-    _jitthreshold_last_point(
-        time_array, ix, ix_start, ix_end, new_start, new_end, t
-    )
+    _jitthreshold_scan(time_array, ix, starts, ends, ix_start, ix_end, new_start, new_end)
 
     new_time_array = time_array[ix]
     new_data_array = data_array[ix]
@@ -436,6 +429,98 @@ def jitthreshold(time_array, data_array, starts, ends, thr, method="above"):
     new_ends = new_end[ix_end]
 
     return (new_time_array, new_data_array, new_starts, new_ends)
+
+
+@jit(nopython=True, cache=True)
+def _jitthreshold_mask(data_array, thr, method):
+    if method == "above":
+        return data_array > thr
+    if method == "below":
+        return data_array < thr
+    if method == "aboveequal":
+        return data_array >= thr
+    return data_array <= thr
+
+
+@jit(nopython=True, cache=True)
+def _jitthreshold_seek_start_interval(time_array, starts):
+    k = 0
+    while k < len(starts) and time_array[0] < starts[k]:
+        k += 1
+    return k
+
+
+@jit(nopython=True, cache=True)
+def _jitthreshold_init_first_point(time_array, ix, ix_start, new_start, ix_end, new_end):
+    if ix[0]:
+        ix_start[0] = 1
+        new_start[0] = time_array[0]
+
+
+@jit(nopython=True, cache=True)
+def _jitthreshold_init_single_point(time_array, ix, ix_start, new_start, ix_end, new_end):
+    if ix[0]:
+        ix_start[0] = 1
+        new_start[0] = time_array[0]
+        ix_end[0] = 1
+        new_end[0] = time_array[0]
+
+
+@jit(nopython=True, cache=True)
+def _jitthreshold_handle_boundary(time_array, ix, ix_start, ix_end, new_start, new_end, t):
+    if ix[t - 1]:
+        ix_end[t - 1] = 1
+        new_end[t - 1] = time_array[t - 1]
+    if ix[t]:
+        ix_start[t] = 1
+        new_start[t] = time_array[t]
+
+
+@jit(nopython=True, cache=True)
+def _jitthreshold_handle_middle(time_array, ix, ix_start, ix_end, new_start, new_end, t):
+    if not ix[t - 1] and ix[t]:
+        ix_start[t] = 1
+        new_start[t] = time_array[t] - (time_array[t] - time_array[t - 1]) / 2
+    if ix[t - 1] and not ix[t]:
+        ix_end[t] = 1
+        new_end[t] = time_array[t] - (time_array[t] - time_array[t - 1]) / 2
+
+
+@jit(nopython=True, cache=True)
+def _jitthreshold_handle_tail(time_array, ix, ix_start, ix_end, new_start, new_end):
+    t = time_array.shape[0] - 1
+    if ix[t] and ix[t - 1]:
+        ix_end[t] = 1
+        new_end[t] = time_array[t]
+    elif ix[t] and not ix[t - 1]:
+        ix_start[t] = 1
+        ix_end[t] = 1
+        new_start[t] = time_array[t] - (time_array[t] - time_array[t - 1]) / 2
+        new_end[t] = time_array[t]
+    elif ix[t - 1] and not ix[t]:
+        ix_end[t] = 1
+        new_end[t] = time_array[t] - (time_array[t] - time_array[t - 1]) / 2
+
+
+@jit(nopython=True, cache=True)
+def _jitthreshold_scan(time_array, ix, starts, ends, ix_start, ix_end, new_start, new_end):
+    k = _jitthreshold_seek_start_interval(time_array, starts)
+    _jitthreshold_init_first_point(time_array, ix, ix_start, new_start, ix_end, new_end)
+
+    t = 1
+    while t < time_array.shape[0] - 1:
+        if time_array[t] > ends[k]:
+            k += 1
+            _jitthreshold_handle_boundary(
+                time_array, ix, ix_start, ix_end, new_start, new_end, t
+            )
+        else:
+            _jitthreshold_handle_middle(
+                time_array, ix, ix_start, ix_end, new_start, new_end, t
+            )
+        t += 1
+
+    _jitthreshold_handle_tail(time_array, ix, ix_start, ix_end, new_start, new_end)
 
 
 def jitbin_array(time_array, data_array, starts, ends, bin_size):
@@ -725,36 +810,61 @@ def jitunion(start1, end1, start2, end2):
     m = start1.shape[0]  # number of intervals in set 1
     n = start2.shape[0]  # number of intervals in set 2
 
-    i = 0  # interval index for set 1
-    j = 0  # interval index for set 2
+    starts = np.empty(m + n, dtype=np.float64)
+    ends = np.empty(m + n, dtype=np.float64)
 
-    newstart = np.zeros(m + n, dtype=np.float64)
-    newend = np.zeros(m + n, dtype=np.float64)
-    ct = 0
+    starts[:m] = start1
+    starts[m:] = start2
+    ends[:m] = end1
+    ends[m:] = end2
 
-    while i < m:
-        j, ct = _jitunion_copy_leading(start1[i], start2, end2, j, newstart, newend, ct)
+    return jitunion_isets(starts, ends)
 
-        if j == n:
-            break
 
-        if start2[j] < end1[i]:
-            i, j, ct = _jitunion_merge_overlap(
-                start1, end1, start2, end2, i, j, newstart, newend, ct
-            )
-        else:
-            newstart[ct] = start1[i]
-            newend[ct] = end1[i]
-            ct += 1
-            i += 1
+@jit(nopython=True, cache=True)
+def _jitdiff_append(newstart, newend, newmeta, ct, start, end, meta):
+    newstart[ct] = start
+    newend[ct] = end
+    newmeta[ct] = meta
+    return ct + 1
 
-    i, ct = _jitunion_append_remaining(start1, end1, i, newstart, newend, ct)
-    j, ct = _jitunion_append_remaining(start2, end2, j, newstart, newend, ct)
 
-    newstart = newstart[0:ct]
-    newend = newend[0:ct]
+@jit(nopython=True, cache=True)
+def _jitdiff_interval(start1, end1, start2, end2, i, j, newstart, newend, newmeta, ct):
+    n = start2.shape[0]
 
-    return (newstart, newend)
+    while j < n and end2[j] <= start1:
+        j += 1
+
+    if j == n:
+        ct = _jitdiff_append(newstart, newend, newmeta, ct, start1, end1, i)
+        return j, ct
+
+    if start2[j] >= end1:
+        ct = _jitdiff_append(newstart, newend, newmeta, ct, start1, end1, i)
+        return j, ct
+
+    if start2[j] > start1:
+        ct = _jitdiff_append(newstart, newend, newmeta, ct, start1, start2[j], i)
+
+    if end2[j] >= end1:
+        return j, ct
+
+    left = end2[j]
+    j += 1
+
+    while j < n and start2[j] < end1:
+        if start2[j] > left:
+            ct = _jitdiff_append(newstart, newend, newmeta, ct, left, start2[j], i)
+        if end2[j] >= end1:
+            return j, ct
+        left = end2[j]
+        j += 1
+
+    if left < end1:
+        ct = _jitdiff_append(newstart, newend, newmeta, ct, left, end1, i)
+
+    return j, ct
 
 
 @jit(nopython=True, cache=True)
@@ -771,22 +881,10 @@ def jitdiff(start1, end1, start2, end2):
     ct = 0
 
     while i < m:
-        j = _jitdiff_advance_to_overlap(start2, end2, j, start1[i])
-
-        if j == n:
-            break
-
-        if start2[j] < end1[i]:
-            i, j, ct = _jitdiff_process_overlap(
-                start1, end1, start2, end2, i, j, newstart, newend, newmeta, ct
-            )
-        else:
-            ct = _jitdiff_write_interval(
-                start1, end1, i, newstart, newend, newmeta, ct
-            )
-            i += 1
-
-    i, ct = _jitdiff_append_remaining(start1, end1, i, newstart, newend, newmeta, ct)
+        j, ct = _jitdiff_interval(
+            start1[i], end1[i], start2, end2, i, j, newstart, newend, newmeta, ct
+        )
+        i += 1  # increment set 1 index
 
     newstart = newstart[0:ct]
     newend = newend[0:ct]
@@ -856,29 +954,18 @@ def _jitfix_iset(start, end):
     ct = 0
 
     while i < m:
-        newstart = start[i]
-        newend = end[i]
-
-        while i < m:
+        while i < m and end[i] <= start[i]:
             if end[i] == start[i]:
                 to_warn[3] = True
-                i += 1
             else:
-                newstart = start[i]
-                newend = end[i]
-                break
-
-        while i < m:
-            if end[i] < start[i]:
                 to_warn[1] = True
-                i += 1
-            else:
-                newstart = start[i]
-                newend = end[i]
-                break
+            i += 1
 
         if i >= m:
             break
+
+        newstart = start[i]
+        newend = end[i]
 
         while i < m - 1:
             if start[i + 1] < end[i]:
@@ -888,10 +975,9 @@ def _jitfix_iset(start, end):
             else:
                 break
 
-        if i < m - 1:
-            if newend == start[i + 1]:
-                to_warn[0] = True
-                newend -= 1.0e-6
+        if i < m - 1 and newend == start[i + 1]:
+            to_warn[0] = True
+            newend -= 1.0e-6
 
         data[ct, 0] = newstart
         data[ct, 1] = newend

@@ -15,12 +15,21 @@ https://github.com/MouseLand/suite2p
 
 import importlib
 from pathlib import Path
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
 from .. import core as nap
 from .loader import BaseLoader
+
+
+@dataclass(frozen=True)
+class _Suite2PMeta:
+    ops: dict
+    rate: float
+    stats: dict
+    iscell: np.ndarray
 
 
 class Suite2P(BaseLoader):
@@ -61,6 +70,7 @@ class Suite2P(BaseLoader):
             The path of the session
         """
         path = Path(path)
+        self._data = {}
 
         super().__init__(path)
 
@@ -73,12 +83,12 @@ class Suite2P(BaseLoader):
 
     def _load_metadata(self, nwbfile, ophys):
         dims = nwbfile.acquisition["TwoPhotonSeries"].dimension[:]
-        self.ops = {"Ly": dims[0], "Lx": dims[1]}
-        self.rate = nwbfile.acquisition["TwoPhotonSeries"].imaging_plane.imaging_rate
-
-        self.stats = {0: {}}
-        self.iscell = ophys["ImageSegmentation"]["PlaneSegmentation"]["iscell"].data[:]
-        return pd.DataFrame(data=self.iscell[:, 0].astype("int"), columns=["iscell"])
+        ops = {"Ly": dims[0], "Lx": dims[1]}
+        rate = nwbfile.acquisition["TwoPhotonSeries"].imaging_plane.imaging_rate
+        stats = {0: {}}
+        iscell = ophys["ImageSegmentation"]["PlaneSegmentation"]["iscell"].data[:]
+        self._meta = _Suite2PMeta(ops=ops, rate=rate, stats=stats, iscell=iscell)
+        return pd.DataFrame(data=iscell[:, 0].astype("int"), columns=["iscell"])
 
     def _get_rois(self, ophys):
         plane_seg = ophys["ImageSegmentation"]["PlaneSegmentation"]
@@ -164,13 +174,6 @@ class Suite2P(BaseLoader):
 
             data[key] = nap.TsdFrame(t=timestamps[0], d=np.hstack(tmp))
 
-        if "F" in data.keys():
-            self.F = data["F"]
-        if "Fneu" in data.keys():
-            self.Fneu = data["Fneu"]
-        if "spks" in data.keys():
-            self.spks = data["spks"]
-
         self.plane_info = pd.DataFrame(
             data=info["plane"][info["iscell"] == 1].values, columns=["plane"]
         )
@@ -197,6 +200,36 @@ class Suite2P(BaseLoader):
             info = self._load_metadata(nwbfile, ophys)
             rois, multiplane = self._get_rois(ophys)
             info = self._populate_stats_and_plane_info(rois, info)
-            return self._load_timeseries(ophys, info, multiplane)
+            data = self._load_timeseries(ophys, info, multiplane)
+            self._data = data
+            return True
         finally:
             io.close()
+
+    @property
+    def F(self):
+        return self._data.get("F")
+
+    @property
+    def Fneu(self):
+        return self._data.get("Fneu")
+
+    @property
+    def spks(self):
+        return self._data.get("spks")
+
+    @property
+    def ops(self):
+        return None if getattr(self, "_meta", None) is None else self._meta.ops
+
+    @property
+    def rate(self):
+        return None if getattr(self, "_meta", None) is None else self._meta.rate
+
+    @property
+    def stats(self):
+        return None if getattr(self, "_meta", None) is None else self._meta.stats
+
+    @property
+    def iscell(self):
+        return None if getattr(self, "_meta", None) is None else self._meta.iscell
