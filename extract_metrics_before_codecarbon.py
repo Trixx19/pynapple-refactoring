@@ -7,9 +7,8 @@ import os
 
 PROJETO  = "pynapple"
 
-SCRIPT   = "tests/test_time_series.py"
-
-ARGS     = []
+SCRIPT   = "-m pytest"            # ou "pytest" se estiver no PATH
+ARGS     = ["tests/test_time_series.py"]
 
 
 # Tempo mÃ¡ximo que o CodeCarbon vai aguardar a execuÃ§Ã£o do projeto antes de encerrar a
@@ -22,7 +21,7 @@ ARGS     = []
 TIMEOUT  = None
 
 # NÃ£o altere o nome dessa pasta, os relatÃ³rios vÃ£o ser salvos nela.
-PASTA    = "metrics-before-codecarbon"
+PASTA    = "metrics-after-codecarbon"
 
 # Executa com mediÃ§Ã£o 
 os.makedirs(PASTA, exist_ok=True)
@@ -31,7 +30,7 @@ tracker = EmissionsTracker(
     project_name=PROJETO,
     measure_power_secs=1,
     output_dir=PASTA,
-    output_file="emissions_antes.csv",
+    output_file="emissions_depois.csv",
     allow_multiple_runs=True,
     log_level="error",
 )
@@ -58,5 +57,5 @@ emissions = tracker.stop()
 print(f"\nResultados:")
 print(f"  Exit code:         {exit_code}")
 print(f"  COâ‚‚ emitido:       {emissions * 1000:.6f} g COâ‚‚")
-print(f"  Arquivo salvo em:  {os.path.join(PASTA, 'emissions.csv')}")
+print(f"  Arquivo salvo em:  {os.path.join(PASTA, 'emissions_depois.csv')}")
 print("\nConcluÃ­do.")

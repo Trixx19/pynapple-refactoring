@@ -21,16 +21,16 @@ print("Rodando radon raw...")
 raw_data = rodar_radon(["radon", "raw", "./pynapple", "-j"])
 
 # NÃ£o altere o nome dessa pasta, os relatÃ³rios vÃ£o ser salvos nela.
-pasta = "metrics-before-radon"  
+pasta = "metrics-after-radon"  
 os.makedirs(pasta, exist_ok=True)
 
-with open(os.path.join(pasta, "cc_antes.json"),  "w", encoding="utf-8") as f:
+with open(os.path.join(pasta, "cc_depois.json"),  "w", encoding="utf-8") as f:
     json.dump(cc_data,  f, indent=2)
-with open(os.path.join(pasta, "mi_antes.json"),  "w", encoding="utf-8") as f:
+with open(os.path.join(pasta, "mi_depois.json"),  "w", encoding="utf-8") as f:
     json.dump(mi_data,  f, indent=2)
-with open(os.path.join(pasta, "hal_antes.json"), "w", encoding="utf-8") as f:
+with open(os.path.join(pasta, "hal_depois.json"), "w", encoding="utf-8") as f:
     json.dump(hal_data, f, indent=2)
-with open(os.path.join(pasta, "raw_antes.json"), "w", encoding="utf-8") as f:
+with open(os.path.join(pasta, "raw_depois.json"), "w", encoding="utf-8") as f:
     json.dump(raw_data, f, indent=2)
 
 print("JSONs salvos.")
@@ -170,11 +170,11 @@ def salvar_csv(nome, linhas, ordenar_por=None):
         writer.writerows(linhas)
     print(f"{len(linhas):>5} linhas â†’ {caminho}")
 
-salvar_csv("mi_por_arquivo_antes.csv",   rows_mi,          ordenar_por="mi")
-salvar_csv("cc_por_funcao_antes.csv",    rows_cc,          ordenar_por="complexity")
-salvar_csv("cc_por_arquivo_antes.csv",   rows_cc_arquivo,  ordenar_por="cc_media")
-salvar_csv("hal_por_arquivo_antes.csv",  rows_hal_arquivo, ordenar_por="effort")
-salvar_csv("hal_por_funcao_antes.csv",   rows_hal_funcao)
-salvar_csv("raw_por_arquivo_e_total_antes.csv",  rows_raw,         ordenar_por="sloc")
+salvar_csv("mi_por_arquivo_depois.csv",   rows_mi,          ordenar_por="mi")
+salvar_csv("cc_por_funcao_depois.csv",    rows_cc,          ordenar_por="complexity")
+salvar_csv("cc_por_arquivo_depois.csv",   rows_cc_arquivo,  ordenar_por="cc_media")
+salvar_csv("hal_por_arquivo_depois.csv",  rows_hal_arquivo, ordenar_por="effort")
+salvar_csv("hal_por_funcao_depois.csv",   rows_hal_funcao)
+salvar_csv("raw_por_arquivo_e_total_depois.csv",  rows_raw,         ordenar_por="sloc")
 
 print("\nConcluÃ­do.")

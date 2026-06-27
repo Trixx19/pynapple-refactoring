@@ -6,7 +6,7 @@ from collections import defaultdict, Counter
 
 # Configuração
 PROJETO = "./pynapple" # diretório do código fonte
-PASTA   = "metrics-before-pylint" # Não altere o nome dessa pasta, os relatórios vão ser salvos nela.
+PASTA   = "metrics-after-pylint" # Não altere o nome dessa pasta, os relatórios vão ser salvos nela.
 
 os.makedirs(PASTA, exist_ok=True)
 
@@ -21,7 +21,7 @@ resultado = subprocess.run(
 )
 
 # Salva o JSON bruto
-caminho_json = os.path.join(PASTA, "pylint_antes.json")
+caminho_json = os.path.join(PASTA, "pylint_depois.json")
 with open(caminho_json, "w", encoding="utf-8") as f:
     f.write(resultado.stdout)
 print(f"JSON completo salvo em: {caminho_json}")
@@ -44,11 +44,11 @@ for msg in mensagens:
     por_tipo[tipo].append(msg)
 
 tipos_nomes = {
-    "convention": "pylint_convention_antes.json",
-    "refactor":   "pylint_refactor_antes.json",
-    "warning":    "pylint_warning_antes.json",
-    "error":      "pylint_error_antes.json",
-    "fatal":      "pylint_fatal_antes.json",
+    "convention": "pylint_convention_depois.json",
+    "refactor":   "pylint_refactor_depois.json",
+    "warning":    "pylint_warning_depois.json",
+    "error":      "pylint_error_depois.json",
+    "fatal":      "pylint_fatal_depois.json",
 }
 
 for tipo, nome_arquivo in tipos_nomes.items():
@@ -62,7 +62,7 @@ print(f"\nTotal: {len(mensagens)} mensagens encontradas.")
 # Ranking da da categoria refactor
 mensagens_refactor = [msg for msg in mensagens if msg.get("type") == "refactor"]
 contagem_simbolos = Counter(msg["symbol"] for msg in mensagens_refactor)
-caminho_ranking = os.path.join(PASTA, "pylint_ranking_smells_antes.json")
+caminho_ranking = os.path.join(PASTA, "pylint_ranking_smells_depois.json")
 with open(caminho_ranking, "w", encoding="utf-8") as f:
     json.dump(
         [{"simbolo": s, "ocorrencias": t} for s, t in contagem_simbolos.most_common()],
@@ -88,7 +88,7 @@ arquivos_ordenados = sorted(
     key=lambda x: x["total"],
     reverse=True,
 )
-caminho_arquivos = os.path.join(PASTA, "pylint_arquivos_criticos_antes.json")
+caminho_arquivos = os.path.join(PASTA, "pylint_arquivos_criticos_depois.json")
 with open(caminho_arquivos, "w", encoding="utf-8") as f:
     json.dump(arquivos_ordenados, f, indent=2, ensure_ascii=False)
 print(f"Arquivos críticos salvo em: {caminho_arquivos}")
@@ -104,7 +104,7 @@ distribuicao = [
     for tipo, msgs in por_tipo.items()
 ]
 distribuicao.sort(key=lambda x: x["ocorrencias"], reverse=True)
-caminho_dist = os.path.join(PASTA, "pylint_distribuicao_categorias_antes.json")
+caminho_dist = os.path.join(PASTA, "pylint_distribuicao_categorias_depois.json")
 with open(caminho_dist, "w", encoding="utf-8") as f:
     json.dump(distribuicao, f, indent=2, ensure_ascii=False)
 print(f"Distribuição por categoria salva em: {caminho_dist}")
