@@ -178,7 +178,7 @@ class Suite2P(BaseLoader):
             data=info["plane"][info["iscell"] == 1].values, columns=["plane"]
         )
 
-        return True
+        return data
 
     def load_suite2p_nwb(self):
         """
