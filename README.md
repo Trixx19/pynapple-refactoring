@@ -1,4 +1,63 @@
 
+# Projeto Final da Disciplina de Manutenção de Software
+
+## Pynapple: branch de refatoração assistida por LLM
+
+Esta branch registra uma atividade de refatoração aplicada ao projeto Pynapple com apoio de Modelos de Linguagem de Grande Escala (LLMs), no contexto de uma pesquisa sobre sustentabilidade de software em projetos open source.
+
+As métricas de qualidade do código foram coletadas com o uso de ferramentas como Pylint, Pytest, Radon e CodeCarbon, permitindo avaliar aspectos de complexidade, cobertura de testes, qualidade estática e impacto ambiental do processo de execução.
+
+## Contexto da atividade
+
+Esta atividade faz parte de uma pesquisa sobre refatoração de código com o apoio de LLMs na sustentabilidade de software em projetos open source. A proposta consiste em selecionar um projeto Python de código aberto, identificar problemas de qualidade no código e utilizar uma LLM para auxiliá-lo na refatoração.
+
+## Relatório completo
+
+A documentação completa do trabalho pode ser acessada pelo link:
+
+- [Relatório Final - Manutenção de Software](https://docs.google.com/document/d/1MCrnIFQgvv6cJjmC3DBvDSLaBMxDwPg2I0ZgHXa7FcQ/edit?usp=sharing)
+
+## Trabalho de refatoração realizado
+
+Nesta branch, o foco foi a redução dos seguintes smells de código clássicos:
+
+- Too many statements: simplificação de métodos longos e reorganização de trechos de lógica em unidades menores e mais legíveis.
+- Too many instance attributes: redução do acoplamento entre classes e organização de responsabilidades em estruturas mais enxutas.
+- Too many branches: simplificação de fluxos condicionais e melhoria na clareza do comportamento do código.
+
+O objetivo principal foi melhorar a manutenibilidade do projeto sem alterar o comportamento esperado das funcionalidades.
+
+## Scripts coletores de métricas
+
+A branch inclui scripts voltados à coleta e comparação de métricas de qualidade antes e depois da refatoração, como:
+
+- Scripts de extração de métricas para pylint, pytest, radon e codecarbon.
+- Scripts para consolidação de scores e métricas associadas.
+
+## Pastas com métricas geradas
+
+Os resultados das coletas estão organizados em pastas específicas, incluindo:
+
+- metrics-before-pylint/
+- metrics-after-pylint/
+- metrics-before-pytest/
+- metrics-after-pytest/
+- metrics-before-radon/
+- metrics-after-radon/
+- metrics-before-codecarbon/
+- metrics-after-codecarbon/
+
+Essas pastas armazenam os dados utilizados para comparar a qualidade do código antes e após as mudanças.
+
+## Gráficos gerados a partir das métricas
+
+A pasta refactoring-charts/ reúne imagens e gráficos produzidos a partir das métricas coletadas, permitindo visualizar a evolução do projeto ao longo do processo de refatoração.
+
+## Observações
+
+Este repositório mantém o projeto original do Pynapple como base, mas a branch foi organizada para registrar o processo de refatoração, as métricas obtidas e os resultados observados ao longo da pesquisa.
+
+---
 
 [![image](https://img.shields.io/pypi/v/pynapple.svg)](https://pypi.python.org/pypi/pynapple)
 [![pynapple CI](https://github.com/pynapple-org/pynapple/actions/workflows/main.yml/badge.svg)](https://github.com/pynapple-org/pynapple/actions/workflows/main.yml)
